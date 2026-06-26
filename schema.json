@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wh1teend/xf-typegen/schema.json",
+  "title": "xf-typegen contract",
+  "description": "Output of the xf-typegen extractor (extract.php). Carries the runtime-composed (XFCP-aware) entity structures of a XenForo installation in a language-agnostic form, so the xf-typegen Rust generator can emit IDE stubs without bootstrapping XF itself.",
+  "type": "object",
+  "required": ["version", "xf", "entities"],
+  "properties": {
+    "version": {
+      "description": "Contract/schema version. Bump on breaking changes to this shape.",
+      "type": "integer",
+      "const": 1
+    },
+    "generator": {
+      "description": "Identifier of the producer, e.g. \"xf-typegen-standalone 1.0.0\".",
+      "type": "string"
+    },
+    "generatedAt": {
+      "description": "ISO-8601 timestamp of extraction. Informational only.",
+      "type": "string"
+    },
+    "xf": {
+      "description": "XenForo build the structures were composed against.",
+      "type": "object",
+      "required": ["versionId"],
+      "properties": {
+        "versionId": {
+          "description": "XF::$versionId, e.g. 2021370 for 2.2.13 (abbccde).",
+          "type": "integer"
+        },
+        "version": {
+          "description": "Human-readable version, e.g. \"2.2.13\".",
+          "type": "string"
+        },
+        "branch": {
+          "description": "Major.minor branch, e.g. \"2.2\" or \"2.3\". Lets the generator pick branch-specific stub shapes.",
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+$"
+        }
+      }
+    },
+    "activeAddOns": {
+      "description": "Add-on IDs active during composition (e.g. \"XF\", \"Vendor/AddOn\"). The effective structures depend on which XFCP extensions were loaded, so this records the snapshot's provenance.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "classExtensions": {
+      "description": "XFCP proxy classes for the active class extensions. Each XFCP_* proxy is created by XF at runtime (it has no file on disk), so the generator emits a stub for it, letting the IDE resolve `class Foo extends XFCP_Foo`.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/classExtension" }
+    },
+    "services": {
+      "description": "Map of service short name (\"XF:User\\Registration\") to its class FQCN without leading backslash. Lets the generator resolve \\XF::service('XF:User\\Registration') at the call site, the same way it resolves finders/repositories.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "captchas": {
+      "description": "Map of captcha short name (\"XF:Turnstile\") to its class FQCN without leading backslash. Lets the generator resolve \\XF::app()->captcha('XF:Turnstile') at the call site.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "options": {
+      "description": "Map of board option name to its resolved PHP type (inferred from the current value). Backs an XFIDEHelper\\Options stub with @property per option, so \\XF::options()->someOption resolves.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "entities": {
+      "description": "Map of XF short name (\"Vendor\\Addon:Foo\") to its composed structure.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/shortName" },
+      "additionalProperties": { "$ref": "#/$defs/entity" }
+    }
+  },
+  "additionalProperties": true,
+
+  "$defs": {
+    "shortName": {
+      "description": "XenForo short class name: <Vendor\\Addon>:<Entity>, e.g. \"XF:User\", \"Vendor\\AddOn:Foo\".",
+      "type": "string",
+      "pattern": "^[^:]+:[^:]+$"
+    },
+
+    "classExtension": {
+      "type": "object",
+      "required": ["proxy", "extends"],
+      "properties": {
+        "proxy": {
+          "description": "FQCN of the XFCP proxy class, WITHOUT leading backslash, e.g. \"Vendor\\\\AddOn\\\\XF\\\\Repository\\\\XFCP_ConnectedAccount\".",
+          "type": "string"
+        },
+        "extends": {
+          "description": "FQCN the proxy resolves to, WITHOUT leading backslash: the previous class in the extension chain, or the base class for the first link.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "phpType": {
+      "description": "Resolved PHP type expression as emitted by XF's own type map (mirrors \\XF\\Cli\\Command\\Development\\EntityClassProperties::getEntityTypeMap). Usually a single scalar (\"int\", \"string\", \"array\"), but XF maps some column types to unions: SERIALIZED => \"array|bool\", JSON => \"array|null\". A column's explicit `typeHint` override, when present, is already baked into this value. Column-level nullability is carried separately by the `nullable` flag — generators OR it in (and should dedupe a resulting double \"|null\").",
+      "type": "string",
+      "minLength": 1
+    },
+
+    "xfColumnType": {
+      "description": "Raw XF column type, lower-cased from the \\XF\\Mvc\\Entity\\Entity::* constant name. Preserved for traceability and future type refinement.",
+      "type": "string",
+      "enum": [
+        "int", "uint", "float", "bool", "str", "binary",
+        "serialized", "serialized_array", "json", "json_array",
+        "list_lines", "list_comma", "list_array",
+        "unknown"
+      ]
+    },
+
+    "entity": {
+      "type": "object",
+      "required": ["shortName", "class", "columns", "relations", "getters"],
+      "properties": {
+        "shortName": { "$ref": "#/$defs/shortName" },
+        "class": {
+          "description": "Fully-qualified entity class WITHOUT leading backslash, e.g. \"XF\\\\Entity\\\\User\".",
+          "type": "string"
+        },
+        "table": { "type": "string" },
+        "contentType": {
+          "description": "Entity content type, if declared (e.g. \"user\"). Absent if the entity has none.",
+          "type": "string"
+        },
+        "primaryKey": {
+          "description": "Primary key column name(s). Always an array, even for a single-column key.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "finder": {
+          "description": "FQCN of the matching Finder, WITHOUT leading backslash. Present only if the class file exists; null/absent otherwise.",
+          "type": ["string", "null"]
+        },
+        "repository": {
+          "description": "FQCN of the matching Repository, WITHOUT leading backslash. Present only if the class file exists; null/absent otherwise.",
+          "type": ["string", "null"]
+        },
+        "columns": {
+          "description": "Map of column name to its resolved type info.",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/column" }
+        },
+        "relations": {
+          "description": "Map of relation name to its target.",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/relation" }
+        },
+        "getters": {
+          "description": "Map of magic-getter property name (as accessed, e.g. \"is_super_admin\", \"PermissionSet\") to its resolved return type. A structure getter whose value is `false` (column shadow disabled) is NOT included here.",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/getter" }
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "column": {
+      "type": "object",
+      "required": ["phpType", "nullable", "xfType"],
+      "properties": {
+        "phpType": { "$ref": "#/$defs/phpType" },
+        "nullable": {
+          "description": "Whether the column may be null (XF column flag `nullable`).",
+          "type": "boolean"
+        },
+        "xfType": { "$ref": "#/$defs/xfColumnType" },
+        "primary": {
+          "description": "True if this column is part of the primary key.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "relation": {
+      "type": "object",
+      "required": ["to", "entity"],
+      "properties": {
+        "to": {
+          "description": "Cardinality. \"one\" => single entity or null; \"many\" => collection.",
+          "type": "string",
+          "enum": ["one", "many"]
+        },
+        "entity": {
+          "description": "Short name of the related entity, e.g. \"XF:Admin\".",
+          "$ref": "#/$defs/shortName"
+        },
+        "class": {
+          "description": "Resolved FQCN of the related entity, WITHOUT leading backslash. Absent if the short name could not be resolved to an existing class.",
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "getter": {
+      "type": "object",
+      "required": ["phpType", "source"],
+      "properties": {
+        "phpType": {
+          "description": "Resolved return type as a PHP type string. May be a scalar (\"bool\"), a leading-backslash FQCN (\"\\\\XF\\\\PermissionSet\"), a union, or \"mixed\" when unresolved. Emitted verbatim into @property annotations.",
+          "type": "string"
+        },
+        "nullable": {
+          "description": "Whether the resolved type already admits null. Informational; `phpType` is authoritative for emission.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "How the type was resolved: \"native\" (declared return type), \"phpdoc\" (@return tag), or \"unknown\" (no info; phpType is \"mixed\").",
+          "type": "string",
+          "enum": ["native", "phpdoc", "unknown"]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

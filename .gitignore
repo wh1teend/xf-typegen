@@ -1,0 +1,8 @@
+/target
+/xf-typegen.json
+/_ide_helper.php
+/.phpstorm.meta.php
+.claude/
+scripts/
+.DS_Store
+*.swp
