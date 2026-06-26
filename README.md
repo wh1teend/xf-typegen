@@ -1,62 +1,67 @@
 # xf-typegen
 
-> Real PHP types for XenForo's magic, so your IDE actually autocompletes.
+> Typed IDE stubs for the parts of XenForo the framework doesn't type itself.
 
 ## The problem
 
-I write XenForo add-ons in nvim, on a plain language server. XF 2.3's template generics already
-resolve the call-site magic when you use the `::class` style — `\XF::finder(\XF\Finder\User::class)`
-comes back typed on its own. But generics only resolve the *class*. They don't type what's on it:
+What you get out of this depends on your XF version, so let's be straight about it.
+
+**On XF 2.3 you may not need it.** The framework already types most of this itself: entities ship
+full `@property` blocks, finders are generic (`\XF::finder(\XF\Finder\User::class)->fetchOne()`
+resolves to `\XF\Entity\User`), and the magic call sites resolve through `class-string<T>` when you
+use the `::class` style. If that covers your code, check before bothering with this.
+
+**On XF 2.2 none of that exists.** `finder()` / `repository()` are typed only to the base
+`\XF\Mvc\Entity\Finder` / `Repository`, `em()->find()` to `Entity`, finders carry no typed methods,
+and `\XF::options()` is a bare `\ArrayObject`:
 
 ```php
-$user = \XF::finder(\XF\Finder\User::class)->fetchOne();  // ok: $user is \XF\Entity\User
-$user->username;            // still: unknown property
-$user->Profile->location;   // still: unknown
+// XF 2.2 — what the IDE actually sees
+\XF::finder('XF:User')->fetchOne();   // \XF\Mvc\Entity\Finder, then mixed
+\XF::repository('XF:User');           // \XF\Mvc\Entity\Repository (base)
+\XF::em()->find('XF:User', 1);        // \XF\Mvc\Entity\Entity (base)
+\XF::options()->boardTitle;           // mixed
 ```
 
-Entity columns, relations and getters are defined in `getStructure()` at runtime, so there's
-nothing in the source for the IDE to read and every property access is a guess. The usual
-workarounds are to keep each entity's shape in your head, or to scatter
-`/** @var \XF\Entity\User $user */` annotations around. Both get old fast.
+xf-typegen resolves every one of those to the concrete class — so on 2.2 you get the same
+concrete-type resolution that 2.3 gets for free from generics.
 
-And the moment you touch the string style (`\XF::finder('XF:User')`) or older 2.2 code, even the
-call-site half goes untyped — `class-string<T>` generics only fire for a real `::class` constant.
+**On both versions** it also covers a few things core never types:
 
-So the tool fills in what's left. It reads what XF already knows at runtime — every entity's
-columns, relations and getters, the finder and repository for each one, board options, the XFCP
-proxies — and writes plain typed PHP stubs that any language server picks up. It's complementary
-to 2.3's generics: they type the call sites, this types the entities (plus the string style, and
-the rest generics don't reach). Run it once and the accesses above resolve, with no annotations.
+- board options per key — `\XF::options()->boardTitle` as `string`, not `mixed` (2.3's `XF\Options`
+  uses `#[AllowDynamicProperties]` but declares no per-key `@property`);
+- the runtime `XFCP_*` class-extension proxies, which have no file for the IDE to read;
+- columns and relations another add-on adds to an entity via XFCP or the `entity_structure` event —
+  those aren't in that entity's shipped `@property`, because XF generates it against the bare class.
+
+One thing it is *not* for: plain entity property typing (`$user->username`). XF ships those
+`@property` blocks itself on both 2.2 and 2.3 — the only thing this adds there is the
+XFCP-composed columns above.
 
 ## Compared to `xf-dev:entity-class-properties`
 
-XF ships `xf-dev:entity-class-properties`, and it does one thing well: it writes `@property`
-lines for an entity's columns, relations and getters straight into the entity's source file.
-That's the whole scope.
-
-Three differences matter in practice:
+XF's built-in command writes `@property` lines into your entity files — the same data the core
+entities already ship with. It doesn't touch the call sites, the finder chain, options or XFCP at
+all, so the two barely overlap. The only shared ground is entity `@property`, and even there
+`xf-typegen` differs:
 
 | | `xf-dev:entity-class-properties` | `xf-typegen` |
 |---|---|---|
-| Magic call sites (`finder`, `repository`, `em()->find`, `::class`) | — | resolved |
-| `fetchOne()` / `fetch()` / iteration typed | — | yes |
 | Entity `@property` | yes | yes |
-| Sees columns/relations added by *other* add-ons (XFCP) | no | yes |
+| Includes columns/relations *other* add-ons add via XFCP | no | yes |
+| Magic call sites (`finder`, `repository`, `em()->find`) | — | resolved |
+| `fetchOne()` / `fetch()` / iteration typed | — | yes |
+| Board options / XFCP proxies | — | yes |
 | Touches your source files | always | only if you opt in |
 
-The main one is the **call sites**. XF's command annotates `$user->username`, but only once you
-already hold a `$user` typed as `\XF\Entity\User`. Getting that typed `$user` out of
-`\XF::finder('XF:User')->fetchOne()` in the first place is exactly what it doesn't do, and that's
-where most of the friction is.
+On the `@property` side the difference is **composition**: XF's command calls `getStructure()` on
+the bare base class, so anything another add-on adds through an XFCP extension (or the
+`entity_structure` event) is invisible to it. `xf-typegen` requests the *composed* structure
+(`Manager::getEntityStructure()`), so those add-on columns and relations are included — and it does
+it without editing your source unless you opt in (`--entity-mode mixin`).
 
-The second is **composition**. XF's command calls `getStructure()` on the bare base class, so
-anything another add-on adds through an XFCP extension (or the `entity_structure` event) is
-invisible to it. `xf-typegen` requests the *composed* structure instead
-(`Manager::getEntityStructure()`), so add-on columns and relations are included.
-
-If all you need is `@property` on your own entities and you don't mind it editing files, XF's
-command is simpler and needs nothing installed. `xf-typegen` is worth it once the
-finder/repository/`find()` magic is what's slowing you down.
+Everything else `xf-typegen` does — call sites, finder/collection typing, options, XFCP proxies —
+the dev command doesn't attempt.
 
 ## How it works
 
@@ -210,19 +215,19 @@ namespace Vendor\AddOn\XF\Repository {
 }
 ```
 
-**`_ide_helper_options.php`** types board options. `\XF::options()` returns a bare `\ArrayObject`,
-so options aren't typed out of the box. This declares an `XFIDEHelper\Options` class with one
-`@property` per option (the type inferred from the current value) and redeclares
-`XF::options()` / `App::options()` to return it, so `\XF::options()->boardTitle` resolves with no
-`@var` hints and no edits to XF core:
+**`_ide_helper_options.php`** types board options, which core leaves untyped on both versions:
+`\XF::options()` is a bare `\ArrayObject` on 2.2, and on 2.3 it's `XF\Options` with
+`#[AllowDynamicProperties]` but no per-key `@property` — so `\XF::options()->boardTitle` comes back
+`mixed` either way. This declares an `XFIDEHelper\Options` class with one `@property` per option
+(the type inferred from the current value) and redeclares `XF::options()` / `App::options()` to
+return it, so the option resolves with no `@var` hints and no edits to XF core:
 
 ```php
 \XF::options()->boardTitle;   // string
 ```
 
 One caveat: because it redeclares `\XF` / `\XF\App`, Intelephense ends up with two `options()`
-declarations (the real one returning `\ArrayObject`, and the typed stub), so hover shows both and
-you may get a "duplicate declaration" notice. It's cosmetic; Intelephense merges the declarations,
-so completion still works and the rest of `\XF::` is unaffected. If the doubled hover bothers you,
-delete this file and add `@return \XFIDEHelper\Options` to the two `options()` docblocks in XF core
-instead.
+declarations (the real one and the typed stub), so hover shows both and you may get a "duplicate
+declaration" notice. It's cosmetic; Intelephense merges the declarations, so completion still works
+and the rest of `\XF::` is unaffected. If the doubled hover bothers you, delete this file and add
+`@return \XFIDEHelper\Options` to the two `options()` docblocks in XF core instead.
