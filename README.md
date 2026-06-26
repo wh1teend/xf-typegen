@@ -4,26 +4,29 @@
 
 ## The problem
 
-I write XenForo add-ons in nvim, on a plain language server. No heavy IDE doing inference
-tricks in the background. The catch is that none of XenForo's "magic" calls autocomplete:
-XF wires most of itself together at runtime out of short string names. Convenient to type,
-but the editor has no idea what comes back:
+I write XenForo add-ons in nvim, on a plain language server. XF 2.3's template generics already
+resolve the call-site magic when you use the `::class` style — `\XF::finder(\XF\Finder\User::class)`
+comes back typed on its own. But generics only resolve the *class*. They don't type what's on it:
 
 ```php
-\XF::finder('XF:User')->fetchOne();   // your IDE sees: mixed
-\XF::repository('XF:User');           // mixed
-\XF::em()->find('XF:User', 1);        // mixed
-$user->username;                      // unknown property
-foreach ($finder->fetch() as $u) { } // $u is... who knows
+$user = \XF::finder(\XF\Finder\User::class)->fetchOne();  // ok: $user is \XF\Entity\User
+$user->username;            // still: unknown property
+$user->Profile->location;   // still: unknown
 ```
 
-The only ways around it are to keep every entity in your head, or to hand-write a
-`/** @var \XF\Entity\User $user */` annotation every time you want completion. Both get old fast.
+Entity columns, relations and getters are defined in `getStructure()` at runtime, so there's
+nothing in the source for the IDE to read and every property access is a guess. The usual
+workarounds are to keep each entity's shape in your head, or to scatter
+`/** @var \XF\Entity\User $user */` annotations around. Both get old fast.
 
-So the tool does the obvious thing: it reads what XF already knows at runtime and writes the
-types out for you. Every entity's columns, relations and getters, plus the finder and
-repository that go with each one, all emitted as plain typed PHP stubs that any language server
-picks up. Run it once and the snippet above resolves to real types, with no annotations.
+And the moment you touch the string style (`\XF::finder('XF:User')`) or older 2.2 code, even the
+call-site half goes untyped — `class-string<T>` generics only fire for a real `::class` constant.
+
+So the tool fills in what's left. It reads what XF already knows at runtime — every entity's
+columns, relations and getters, the finder and repository for each one, board options, the XFCP
+proxies — and writes plain typed PHP stubs that any language server picks up. It's complementary
+to 2.3's generics: they type the call sites, this types the entities (plus the string style, and
+the rest generics don't reach). Run it once and the accesses above resolve, with no annotations.
 
 ## Compared to `xf-dev:entity-class-properties`
 
