@@ -1,6 +1,6 @@
 [package]
 name = "xf-typegen"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Generate real PHP types from XenForo's magic — full IDE autocomplete, no PhpStorm required."
 license = "MIT"

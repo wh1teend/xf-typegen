@@ -100,8 +100,14 @@ fn resolve_targets(spec: &Option<String>) -> Result<Vec<Target>> {
                 if part.is_empty() {
                     continue;
                 }
-                let target = Target::parse(part)
-                    .with_context(|| format!("unknown target '{}' (expected ide-helper, phpstorm-meta)", part))?;
+                let target = Target::parse(part).with_context(|| {
+                    let expected = Target::ALL
+                        .iter()
+                        .map(Target::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("unknown target '{}' (expected {})", part, expected)
+                })?;
                 if !targets.contains(&target) {
                     targets.push(target);
                 }
