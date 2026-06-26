@@ -4,64 +4,35 @@
 
 ## The problem
 
-What you get out of this depends on your XF version, so let's be straight about it.
+Straight up: XenForo already types most of its own runtime magic, so this is a narrow tool by
+design. Worth knowing what core already does before you reach for it.
 
-**On XF 2.3 you may not need it.** The framework already types most of this itself: entities ship
-full `@property` blocks, finders are generic (`\XF::finder(\XF\Finder\User::class)->fetchOne()`
-resolves to `\XF\Entity\User`), and the magic call sites resolve through `class-string<T>` when you
-use the `::class` style. If that covers your code, check before bothering with this.
+On **both 2.2 and 2.3**, XF ships `xf-dev:generate-phpstorm-meta`, which writes a `.phpstorm.meta.php`
+that resolves the string-style call sites — `\XF::finder('XF:User')`, `repository()`, `service()`,
+`em()->find()`, the `$this->finder(...)` helpers in controllers/repos/services/widgets, and more.
+Entities ship full `@property` blocks for their columns, relations and getters. On **2.3**, template
+generics additionally type the `::class`-style call sites and the finder chain
+(`\XF::finder(\XF\Finder\UserFinder::class)->fetchOne()` → `\XF\Entity\User`). For standard code on
+2.3, that's basically everything — you probably don't need this.
 
-**On XF 2.2 none of that exists.** `finder()` / `repository()` are typed only to the base
-`\XF\Mvc\Entity\Finder` / `Repository`, `em()->find()` to `Entity`, finders carry no typed methods,
-and `\XF::options()` is a bare `\ArrayObject`:
+What XF doesn't type, on **either** version:
 
-```php
-// XF 2.2 — what the IDE actually sees
-\XF::finder('XF:User')->fetchOne();   // \XF\Mvc\Entity\Finder, then mixed
-\XF::repository('XF:User');           // \XF\Mvc\Entity\Repository (base)
-\XF::em()->find('XF:User', 1);        // \XF\Mvc\Entity\Entity (base)
-\XF::options()->boardTitle;           // mixed
-```
+- **Board options.** `\XF::options()->boardTitle` comes back `mixed` — a bare `\ArrayObject` on 2.2,
+  and `XF\Options` with `#[AllowDynamicProperties]` but no per-key `@property` on 2.3.
+- **XFCP proxies.** `class Foo extends XFCP_Foo` points at a class XF builds at runtime with no
+  file, so the IDE flags it undefined. Nothing in core generates a stub for it.
+- **Cross-add-on columns.** A column another add-on adds to an entity via XFCP or the
+  `entity_structure` event isn't in that entity's shipped `@property` — XF generates that against
+  the bare class, not the composed one.
 
-xf-typegen resolves every one of those to the concrete class — so on 2.2 you get the same
-concrete-type resolution that 2.3 gets for free from generics.
+And one gap that's **2.2-only**:
 
-**On both versions** it also covers a few things core never types:
+- **The finder chain.** 2.2 has no generics and its finders carry no typed methods, so
+  `finder('XF:User')->fetchOne()` lands on the base `Entity`, not the concrete one. 2.3 types this
+  natively; 2.2 doesn't.
 
-- board options per key — `\XF::options()->boardTitle` as `string`, not `mixed` (2.3's `XF\Options`
-  uses `#[AllowDynamicProperties]` but declares no per-key `@property`);
-- the runtime `XFCP_*` class-extension proxies, which have no file for the IDE to read;
-- columns and relations another add-on adds to an entity via XFCP or the `entity_structure` event —
-  those aren't in that entity's shipped `@property`, because XF generates it against the bare class.
-
-One thing it is *not* for: plain entity property typing (`$user->username`). XF ships those
-`@property` blocks itself on both 2.2 and 2.3 — the only thing this adds there is the
-XFCP-composed columns above.
-
-## Compared to `xf-dev:entity-class-properties`
-
-XF's built-in command writes `@property` lines into your entity files — the same data the core
-entities already ship with. It doesn't touch the call sites, the finder chain, options or XFCP at
-all, so the two barely overlap. The only shared ground is entity `@property`, and even there
-`xf-typegen` differs:
-
-| | `xf-dev:entity-class-properties` | `xf-typegen` |
-|---|---|---|
-| Entity `@property` | yes | yes |
-| Includes columns/relations *other* add-ons add via XFCP | no | yes |
-| Magic call sites (`finder`, `repository`, `em()->find`) | — | resolved |
-| `fetchOne()` / `fetch()` / iteration typed | — | yes |
-| Board options / XFCP proxies | — | yes |
-| Touches your source files | always | only if you opt in |
-
-On the `@property` side the difference is **composition**: XF's command calls `getStructure()` on
-the bare base class, so anything another add-on adds through an XFCP extension (or the
-`entity_structure` event) is invisible to it. `xf-typegen` requests the *composed* structure
-(`Manager::getEntityStructure()`), so those add-on columns and relations are included — and it does
-it without editing your source unless you opt in (`--entity-mode mixin`).
-
-Everything else `xf-typegen` does — call sites, finder/collection typing, options, XFCP proxies —
-the dev command doesn't attempt.
+That's the whole scope. xf-typegen fills exactly those gaps. If you're on 2.3 and none of them bite
+you, the stock dev tools already have you covered.
 
 ## How it works
 
@@ -165,49 +136,27 @@ extension does, so run `xf-dev:rebuild-caches` after that.
 
 ## What gets generated
 
-**`.phpstorm.meta.php`** resolves the magic call sites to concrete classes, in both styles XF
-accepts:
+Listed by how much they actually add over stock XF — the first two are the reason this exists.
+
+**`_ide_helper_options.php`** — the one core never covers on either version. `\XF::options()` is a
+bare `\ArrayObject` on 2.2, and `XF\Options` with `#[AllowDynamicProperties]` but no per-key
+`@property` on 2.3, so `\XF::options()->boardTitle` is `mixed` both ways. This declares an
+`XFIDEHelper\Options` class with one `@property` per option (type inferred from the current value)
+and redeclares `XF::options()` / `App::options()` to return it:
 
 ```php
-\XF::finder('XF:User')                 // string style
-\XF::finder(\XF\Finder\User::class)    // ::class style (XF 2.3, also fine in 2.2)
-\XF::repository('XF:User')
-\XF::service('XF:User\Registration')   // services too, both styles
-\XF::app()->captcha('XF:Turnstile')    // captchas
-\XF::em()->find('XF:User', 1)
-$this->finder('XF:User');              // same helpers inside controllers,
-$this->repository('XF:User');          //   repositories, services, widgets, …
-$this->assertRecordExists('XF:User', $id);
+\XF::options()->boardTitle;   // string
 ```
 
-**`_ide_helper.php`** holds the bulk of it:
+Caveat: because it redeclares `\XF` / `\XF\App`, Intelephense ends up with two `options()`
+declarations (the real one and the typed stub), so hover shows both and you may get a "duplicate
+declaration" notice. It's cosmetic — Intelephense merges them, completion works, the rest of `\XF::`
+is unaffected. If the doubled hover bothers you, delete this file and add
+`@return \XFIDEHelper\Options` to the two `options()` docblocks in XF core instead.
 
-- typed **Finder** stubs, so `finder('XF:User')->fetchOne()` returns the entity, and the fluent
-  chain keeps the type the whole way down:
-  `finder('XF:User')->where(...)->order(...)->fetchOne()` still resolves to the entity.
-- typed **Collection** stubs, so `->fetch()` returns an entity-typed collection. `foreach`,
-  `first()`, `last()`, `toArray()`, `filter()/slice()/reverse()` all resolve to the entity. This
-  is done per-entity, so XF's real `Finder`/`AbstractCollection` methods stay completable and
-  nothing core is redeclared.
-- plain entity **`@property`** stubs for columns, getters and relations.
-
-The entity `@property` part has two strategies (`--entity-mode`):
-
-- **`redeclare`** (the default) redeclares each entity class with its properties, like Laravel's
-  `_ide_helper_models`. It doesn't touch your source, but a few analyzers will warn about the
-  duplicate class.
-- **`mixin`** emits `XFIDEHelper\Entity_<id>` helper classes and attaches them with a `@mixin`
-  line that `xf-typegen extract --mixin apply` writes into your entity files. No duplicate-class
-  warnings, but it edits the XF tree. It's idempotent, and `--mixin remove` reverses it exactly.
-  Use both sides together: `xf-typegen extract --mixin apply`, then
-  `xf-typegen generate --entity-mode mixin`.
-
-Stick with `redeclare` unless your editor complains.
-
-**`_ide_helper_xfcp.php`** covers XF's class-extension proxies. When an add-on extends a class it
-writes `class Foo extends XFCP_Foo`, and XF builds that `XFCP_Foo` proxy at runtime. There's no
-file for it anywhere, so the IDE reports it as undefined. This file declares each proxy so the
-chain resolves:
+**`_ide_helper_xfcp.php`** — also never covered by core. When an add-on writes
+`class Foo extends XFCP_Foo`, XF builds that `XFCP_Foo` proxy at runtime with no file, so the IDE
+reports it as undefined. This declares each proxy so the chain resolves:
 
 ```php
 namespace Vendor\AddOn\XF\Repository {
@@ -215,19 +164,24 @@ namespace Vendor\AddOn\XF\Repository {
 }
 ```
 
-**`_ide_helper_options.php`** types board options, which core leaves untyped on both versions:
-`\XF::options()` is a bare `\ArrayObject` on 2.2, and on 2.3 it's `XF\Options` with
-`#[AllowDynamicProperties]` but no per-key `@property` — so `\XF::options()->boardTitle` comes back
-`mixed` either way. This declares an `XFIDEHelper\Options` class with one `@property` per option
-(the type inferred from the current value) and redeclares `XF::options()` / `App::options()` to
-return it, so the option resolves with no `@var` hints and no edits to XF core:
+**`_ide_helper.php`** — typed Finder/Collection stubs plus entity `@property`. The Finder/Collection
+typing is the part that matters **on 2.2**: there `finder('XF:User')->fetchOne()` returns the base
+`Entity`, and these stubs make the whole chain
+(`finder('XF:User')->where(...)->fetchOne()`, `->fetch()`, `first()`, `filter()`, …) resolve to the
+concrete entity. On 2.3 generics already do this, so it's redundant there. The entity `@property`
+part is also mostly redundant — XF ships those blocks — except it's built from the *composed*
+structure, so it includes columns other add-ons add via XFCP. Two strategies (`--entity-mode`):
 
-```php
-\XF::options()->boardTitle;   // string
-```
+- **`redeclare`** (default) redeclares each entity class with its properties, like Laravel's
+  `_ide_helper_models`. No source edits; some analyzers warn about the duplicate class.
+- **`mixin`** emits `XFIDEHelper\Entity_<id>` classes attached via a `@mixin` line that
+  `xf-typegen extract --mixin apply` writes into your entity files. No duplicate-class warnings, but
+  it edits the XF tree (idempotent; `--mixin remove` reverses it). Use with
+  `xf-typegen generate --entity-mode mixin`.
 
-One caveat: because it redeclares `\XF` / `\XF\App`, Intelephense ends up with two `options()`
-declarations (the real one and the typed stub), so hover shows both and you may get a "duplicate
-declaration" notice. It's cosmetic; Intelephense merges the declarations, so completion still works
-and the rest of `\XF::` is unaffected. If the doubled hover bothers you, delete this file and add
-`@return \XFIDEHelper\Options` to the two `options()` docblocks in XF core instead.
+**`.phpstorm.meta.php`** — resolves the string-style call sites
+(`\XF::finder('XF:User')`, `repository()`, `service()`, `em()->find()`, `$this->finder(...)`, …).
+Note this **duplicates XF's own `xf-dev:generate-phpstorm-meta`**, which ships in both 2.2 and 2.3 —
+it's here so you get everything from one command, but if you already run the stock generator, skip
+this target with `--targets options,xfcp,ide-helper` (the four targets are `ide-helper`,
+`phpstorm-meta`, `xfcp`, `options`).
